@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gonk R2 Enhanced FPS v008 - Optimized</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+    canvas { display: block; }
+    
+    #hud {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 10;
+    }
+    
+    #electricFlash {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(circle, rgba(0,255,255,0.3) 0%, rgba(255,255,255,0.1) 50%, transparent 100%);
+      opacity: 0; pointer-events: none; z-index: 15; transition: opacity 0.05s ease;
+    }
+    
+    #healthBar {
+      position: absolute; top: 20px; left: 20px; width: 200px; height: 20px;
+      border: 2px solid #ff0000; background: rgba(0, 0, 0, 0.5);
+    }
+    
+    #healthFill {
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, #ff0000, #ffff00, #00ff00);
+      transition: width 0.3s ease;
+    }
+    
+    #healthText {
+      position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+      color: white; font-size: 12px; font-weight: bold;
+    }
+    
+    #ammoCounter {
+      position: absolute; top: 20px; right: 20px; color: #1fe0ff;
+      font-size: 18px; font-weight: bold; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    }
+    
+    #zapperUI {
+      position: absolute; bottom: 0; left: 20px; width: 40px; height: 15vh;
+      border: 2px solid #1fe0ff; background: rgba(0, 0, 0, 0.5);
+    }
+    
+    #zapperFill {
+      position: absolute; bottom: 0; left: 0; width: 100%; height: 100%;
+      background: linear-gradient(0deg, #1fe0ff, #00ffff); transition: height 0.1s ease;
+    }
+    
+    #weaponSprite {
+      position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+      width: 200px; height: 300px; background-image: url('pngs/weapon_sprite.png');
+      background-size: contain; background-repeat: no-repeat; background-position: bottom center;
+      pointer-events: none; z-index: 5;
+    }
+    
+    #statusText {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      color: #ffff00; font-size: 14px; font-weight: bold; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div id="electricFlash"></div>
+    <div id="healthBar"><div id="healthFill"></div><div id="healthText">10/10</div></div>
+    <div id="ammoCounter">Pamphlets: 50</div>
+    <div id="zapperUI"><div id="zapperFill"></div></div>
+    <div id="weaponSprite"></div>
+    <div id="statusText">WASD move, Mouse look, Left zap, Right pamphlet, Space doors, +/- music, P no-clip</div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    if (typeof THREE === 'undefined') {
+      console.error('THREE.js failed to load!');
+      document.body.innerHTML = '<h1 style="color: red; text-align: center; margin-top: 50px;">THREE.js failed to load.</h1>';
+    } else {
+      console.log('THREE.js loaded! Version: Gonk008 - Optimized');
+    }
+    
+    // === GAME CONFIGURATION ===
+    const CONFIG = {
+      MOVE_SPEED: 0.08,
+      BOB_SPEED: 8,
+      BOB_AMOUNT: 0.1,
+      FRICTION: 0.85,
+      COLLISION_RADIUS: 0.4,
+      WALL_BARRIER: 0.6,
+      DOOR_OPEN_TIME: 5000,
+      ZAP_RANGE: 3.0,
+      ZAP_RECHARGE_TIME: 2.0,
+      STORMIE_SHOT_COOLDOWN: 2000,
+      STORMIE_ATTACK_RANGE: 8.0,
+      ANIMATION_INTERVAL: 500,
+      STORMIE_ANIM_SPEED: 12,
+      XEROX_ANIM_SPEED: 18,
+      FADE_SPEED: 0.05,
+      DEATH_ANIM_DELAY: 1400
+    };
+    
+    // === GAME VARIABLES ===
+    let scene, camera, renderer;
+    let r2Units = [], stormtroopers = [], probeDroids = [], xeroxDroids = [], aliens = [], doors = [], npcs = [], pamphletProjectiles = [];
+    let gameOver = false, currentMusicTrack = 1, musicStarted = false, gameStarted = false;
+    let noClipMode = false; // Debug mode for walking through walls
+    
+    let gameState = { health: 10, maxHealth: 10, pamphlets: 50, maxPamphlets: 100, zapReady: true, zapCharge: 1.0, isMoving: false };
+    
+    // === MOVEMENT VARIABLES ===
+    let keys = {}, yaw = 0, baseY = 1.5, bobTime = 0, velocity = new THREE.Vector3();
+    
+    // === AUDIO SYSTEM ===
+    const sounds = {
+      death: new Audio("sounds/Game Over (High Score List).mp3"),
+      r2scream: new Audio("sounds/r2scream.wav"),
+      zapper1: new Audio("sounds/zapper1.wav"), zapper2: new Audio("sounds/zapper2.wav"),
+      zapper3: new Audio("sounds/zapper3.wav"), zapper4: new Audio("sounds/zapper4.wav"), zapper5: new Audio("sounds/zapper5.wav"),
+      dooropen: new Audio("sounds/dooropen.wav"), doorclose: new Audio("sounds/doorclose.wav"),
+      gonkdie: new Audio("sounds/gonkdie.wav"), prbdie: new Audio("sounds/PRBdie.wav"), blast1: new Audio("sounds/blast1.wav"),
+      stormiedies1: new Audio("sounds/stormiedies1.wav"),
+      music: null
+    };
+    
+    // Set volumes
+    [sounds.zapper1, sounds.zapper2, sounds.zapper3, sounds.zapper4, sounds.zapper5].forEach(sound => sound.volume = 0.6);
+    sounds.blast1.volume = 0.7; sounds.prbdie.volume = 0.6;
+    
+    function playSound(soundName, volume = null) {
+      const sound = sounds[soundName];
+      if (!sound) return;
+      if (volume !== null) sound.volume = volume;
+      sound.currentTime = 0;
+      sound.play().catch(e => console.log(`${soundName} audio failed:`, e));
+    }
+    
+    // === MUSIC FUNCTIONS ===
+    function getNextMusicTrack() { currentMusicTrack++; if (currentMusicTrack > 9) currentMusicTrack = 1; return currentMusicTrack; }
+    function getPrevMusicTrack() { currentMusicTrack--; if (currentMusicTrack < 1) currentMusicTrack = 9; return currentMusicTrack; }
+    function startMusic(trackNumber = currentMusicTrack) {
+      if (sounds.music) { sounds.music.pause(); sounds.music = null; }
+      sounds.music = new Audio(`sounds/music${trackNumber}.mp3`);
+      sounds.music.loop = true; sounds.music.volume = 0.15;
+      sounds.music.play().catch(e => console.log('Music play failed:', e));
+      currentMusicTrack = trackNumber; musicStarted = true;
+    }
+    function startBackgroundMusic() { if (!musicStarted) startMusic(1); }
+    function switchMusicTrack(direction) {
+      if (direction === 'next') getNextMusicTrack(); else if (direction === 'prev') getPrevMusicTrack();
+      startMusic(currentMusicTrack); console.log(`Switched to music track ${currentMusicTrack}`);
+    }
+    
+    // === MATERIALS ===
+    function loadTextureMaterials(basePath, count, startIndex = 1, transparent = true) {
+      return Array.from({length: count}, (_, i) => 
+        new THREE.MeshBasicMaterial({ 
+          map: new THREE.TextureLoader().load(`${basePath}${i + startIndex}.png`), 
+          transparent 
+        })
+      );
+    }
+    
+    const r2Materials = [0,1,2,3].map(i => new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(`pngs/r2d2_frame_0${i}.png`), transparent: true }));
+    const stormieIdleMaterials = loadTextureMaterials('pngs/stormie', 24);
+    const stormieAttackMaterial = new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(`pngs/stormie0.png`), transparent: true });
+    const stormieDieMaterials = loadTextureMaterials('pngs/stormiedie', 14);
+    const probeMaterials = loadTextureMaterials('pngs/probe', 13);
+    const xeroxMaterials = loadTextureMaterials('pngs/xerox', 13);
+    const alienAMaterials = loadTextureMaterials('pngs/aliena', 9);
+    
+    // === EFFECTS ===
+    function triggerElectricFlash() {
+      const flashElement = document.getElementById('electricFlash');
+      flashElement.style.opacity = '1'; setTimeout(() => flashElement.style.opacity = '0', 50);
+    }
+    function playRandomZapperSound() {
+      const zapperSounds = ['zapper1', 'zapper2', 'zapper3', 'zapper4', 'zapper5'];
+      const randomSound = zapperSounds[Math.floor(Math.random() * zapperSounds.length)];
+      playSound(randomSound);
+    }
+    function createRedFlash(mesh) {
+      const originalMaterial = mesh.material;
+      const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true });
+      mesh.material = redMaterial; setTimeout(() => mesh.material = originalMaterial, 100);
+    }
+    function createBlueGlow(mesh) {
+      const glowGeometry = mesh.geometry.clone();
+      const glowMaterial = new THREE.MeshBasicMaterial({ color: 0x3333ff, transparent: true, opacity: 0.3 });
+      const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+      glowMesh.position.copy(mesh.position); glowMesh.rotation.copy(mesh.rotation); glowMesh.scale.setScalar(1.1);
+      scene.add(glowMesh); return glowMesh;
+    }
+    
+    // === PAMPHLET PROJECTILE CLASS ===
+    class PamphletProjectile {
+      constructor(startPosition, direction) {
+        this.position = startPosition.clone(); this.velocity = direction.clone().multiplyScalar(0.3);
+        this.mesh = null; this.life = 100; this.createMesh();
+      }
+      createMesh() {
+        const pamphletTexture = new THREE.TextureLoader().load("pngs/pamphlet1.png");
+        const pamphletMaterial = new THREE.MeshBasicMaterial({ map: pamphletTexture, transparent: true });
+        const pamphletGeometry = new THREE.PlaneGeometry(0.3, 0.3);
+        this.mesh = new THREE.Mesh(pamphletGeometry, pamphletMaterial);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1.5; scene.add(this.mesh);
+      }
+      update() {
+        this.position.add(this.velocity); this.mesh.position.copy(this.position); this.mesh.position.y = 1.5;
+        this.mesh.rotation.z += 0.3; this.life--; return this.life > 0;
+      }
+      checkHit() {
+        const allTargets = [...r2Units, ...stormtroopers, ...probeDroids, ...xeroxDroids, ...aliens, ...npcs];
+        for (let target of allTargets) {
+          if (target.dying) continue;
+          const distance = this.position.distanceTo(target.position);
+          if (distance < 1.0) { target.convert(); this.destroy(); return true; }
+        }
+        return false;
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh);
+        const index = pamphletProjectiles.indexOf(this);
+        if (index > -1) pamphletProjectiles.splice(index, 1);
+      }
+    }
+    
+    // === GAME OVER SYSTEM ===
+    function triggerGameOver() {
+      if (gameOver) return; gameOver = true; console.log("GAME OVER!");
+      if (sounds.music) sounds.music.pause(); playSound('gonkdie');
+      const gameOverDiv = document.createElement('div'); gameOverDiv.id = 'gameOverScreen';
+      gameOverDiv.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.8); color: red; font-family: Arial, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1000; pointer-events: auto;`;
+      gameOverDiv.innerHTML = `<h1 style="font-size: 4em; margin: 0; text-shadow: 2px 2px 4px black;">GAME OVER</h1><p style="font-size: 1.5em; margin: 20px 0; text-shadow: 1px 1px 2px black;">Health: ${gameState.health}</p><p id="restartMessage" style="font-size: 1.2em; color: yellow; text-shadow: 1px 1px 2px black; opacity: 0;">Click to Restart</p>`;
+      document.body.appendChild(gameOverDiv);
+      setTimeout(() => { document.getElementById('restartMessage').style.opacity = '1'; gameOverDiv.addEventListener('click', restartGame); }, 2000);
+    }
+    
+    function restartGame() {
+      console.log("Restarting game...");
+      const gameOverScreen = document.getElementById('gameOverScreen'); if (gameOverScreen) gameOverScreen.remove();
+      gameOver = false; gameStarted = true; gameState.health = gameState.maxHealth; gameState.pamphlets = 50; gameState.zapReady = true; gameState.zapCharge = 1.0;
+      camera.position.set(0, baseY, 0); yaw = 0; camera.rotation.y = yaw;
+      [...r2Units, ...stormtroopers, ...probeDroids, ...xeroxDroids, ...aliens, ...pamphletProjectiles].forEach(entity => entity.destroy());
+      for (let door of doors) { if (door.mesh) scene.remove(door.mesh); }
+      r2Units.length = 0; stormtroopers.length = 0; probeDroids.length = 0; xeroxDroids.length = 0; aliens.length = 0; doors.length = 0; pamphletProjectiles.length = 0;
+      createAllUnits(); createDoors(); const nextTrack = getNextMusicTrack(); startMusic(nextTrack);
+      console.log(`Restarted with music track ${currentMusicTrack}`);
+    }
+    
+    // === DOOR CLASS ===
+    class Door {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.isOpen = false; this.isAnimating = false; this.mesh = null; this.createMesh();
+      }
+      createMesh() {
+        const doorTexture = new THREE.TextureLoader().load("pngs/splitdoor.png");
+        const doorMaterial = new THREE.MeshStandardMaterial({ map: doorTexture, transparent: false, side: THREE.DoubleSide });
+        const doorGeometry = new THREE.PlaneGeometry(3, 4);
+        this.mesh = new THREE.Mesh(doorGeometry, doorMaterial);
+        this.mesh.position.set(this.position.x, 2, this.position.z);
+        this.mesh.rotation.y = this.position.x === 0 ? Math.PI / 2 : 0; scene.add(this.mesh);
+      }
+      open() {
+        if (this.isOpen || this.isAnimating) return; this.isAnimating = true; playSound('dooropen');
+        console.log(`Opening door ${this.id}`);
+        const startY = 2, endY = 6, animationSteps = 10; let step = 0;
+        const animate = () => {
+          step++; const progress = step / animationSteps; this.mesh.position.y = startY + (endY - startY) * progress;
+          if (step < animationSteps) { setTimeout(animate, 30); }
+          else { this.isOpen = true; this.isAnimating = false; setTimeout(() => this.close(), CONFIG.DOOR_OPEN_TIME); }
+        };
+        animate();
+      }
+      close() {
+        if (!this.isOpen || this.isAnimating) return; this.isAnimating = true; playSound('doorclose');
+        const startY = 6, endY = 2, animationSteps = 10; let step = 0;
+        const animate = () => {
+          step++; const progress = step / animationSteps; this.mesh.position.y = startY + (endY - startY) * progress;
+          if (step < animationSteps) { setTimeout(animate, 30); }
+          else { this.isOpen = false; this.isAnimating = false; }
+        };
+        animate();
+      }
+      checkCollision(newPosition) {
+        if (this.isOpen) return true;
+        const doorBounds = { minX: this.position.x - 1.5, maxX: this.position.x + 1.5, minZ: this.position.z - 1.5, maxZ: this.position.z + 1.5 };
+        return !(newPosition.x >= doorBounds.minX && newPosition.x <= doorBounds.maxX && newPosition.z >= doorBounds.minZ && newPosition.z <= doorBounds.maxZ);
+      }
+    }
+    
+    // === PROBE DROID CLASS ===
+    class ProbeDroid {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.health = 3; this.mesh = null; this.collisionRadius = 0.75;
+        this.animFrame = 0; this.dying = false; this.converted = false; this.glowMesh = null; this.createMesh();
+      }
+      createMesh() {
+        const probeGeometry = new THREE.PlaneGeometry(2.1, 2.6);
+        this.mesh = new THREE.Mesh(probeGeometry, probeMaterials[0]);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1.5; scene.add(this.mesh);
+      }
+      update() {
+        if (this.dying) return;
+        const direction = new THREE.Vector3(); direction.subVectors(camera.position, this.mesh.position).normalize();
+        this.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+      }
+      animate() {
+        if (this.dying) return; this.animFrame = (this.animFrame + 1) % 13;
+        if (this.mesh && probeMaterials.length === 13) { this.mesh.material = probeMaterials[this.animFrame]; }
+      }
+      convert() {
+        if (this.converted) return; this.converted = true; this.glowMesh = createBlueGlow(this.mesh);
+        console.log(`${this.id} converted!`);
+      }
+      takeDamage(amount) {
+        if (this.dying) return; this.health -= amount; console.log(`${this.id} took ${amount} damage, health: ${this.health}`);
+        if (this.health <= 0) this.die();
+      }
+      die() {
+        if (this.dying) return; this.dying = true; playSound('prbdie');
+        let opacity = 1.0;
+        const fadeInterval = setInterval(() => {
+          opacity -= CONFIG.FADE_SPEED;
+          if (this.mesh) this.mesh.material.opacity = opacity;
+          if (this.glowMesh) this.glowMesh.material.opacity = opacity * 0.3;
+          if (opacity <= 0) { clearInterval(fadeInterval); this.destroy(); }
+        }, 50);
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh); if (this.glowMesh) scene.remove(this.glowMesh);
+        const index = probeDroids.indexOf(this); if (index > -1) probeDroids.splice(index, 1);
+      }
+    }
+    
+    // === XEROX DROID CLASS ===
+    class XeroxDroid {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.health = 2; this.mesh = null; this.shadowMesh = null;
+        this.collisionRadius = 1.8; this.animFrame = 0; this.dying = false; this.converted = false; this.glowMesh = null; 
+        this.animTimer = 0; this.createMesh();
+      }
+      createMesh() {
+        const xeroxGeometry = new THREE.PlaneGeometry(4.2, 5.4);
+        this.mesh = new THREE.Mesh(xeroxGeometry, xeroxMaterials[0]);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1.4;
+        const shadowGeometry = new THREE.PlaneGeometry(4.2, 4.2);
+        this.shadowMesh = new THREE.Mesh(shadowGeometry, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.25, color: 0x000000 }));
+        this.shadowMesh.rotation.x = -Math.PI / 2; this.shadowMesh.position.set(this.position.x, 0.01, this.position.z);
+        scene.add(this.mesh); scene.add(this.shadowMesh);
+      }
+      update() {
+        if (this.dying) return;
+        const direction = new THREE.Vector3(); direction.subVectors(camera.position, this.mesh.position).normalize();
+        this.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+        this.shadowMesh.position.set(this.mesh.position.x, 0.01, this.mesh.position.z);
+      }
+      animate() {
+        if (this.dying) return; 
+        this.animTimer += 1;
+        if (this.animTimer >= CONFIG.XEROX_ANIM_SPEED) {
+          this.animFrame = (this.animFrame + 1) % 13;
+          if (this.mesh && xeroxMaterials.length === 13) { this.mesh.material = xeroxMaterials[this.animFrame]; }
+          this.animTimer = 0;
+        }
+      }
+      convert() {
+        if (this.converted) return; this.converted = true; this.glowMesh = createBlueGlow(this.mesh);
+        console.log(`${this.id} converted!`);
+      }
+      takeDamage(amount) {
+        if (this.dying) return; this.health -= amount; console.log(`${this.id} took ${amount} damage, health: ${this.health}`);
+        if (this.health <= 0) this.die();
+      }
+      die() {
+        if (this.dying) return; this.dying = true;
+        let opacity = 1.0;
+        const fadeInterval = setInterval(() => {
+          opacity -= CONFIG.FADE_SPEED;
+          if (this.mesh) this.mesh.material.opacity = opacity;
+          if (this.shadowMesh) this.shadowMesh.material.opacity = opacity * 0.25;
+          if (this.glowMesh) this.glowMesh.material.opacity = opacity * 0.3;
+          if (opacity <= 0) { clearInterval(fadeInterval); this.destroy(); }
+        }, 50);
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh); if (this.shadowMesh) scene.remove(this.shadowMesh);
+        if (this.glowMesh) scene.remove(this.glowMesh);
+        const index = xeroxDroids.indexOf(this); if (index > -1) xeroxDroids.splice(index, 1);
+      }
+    }
+    
+    // === ALIEN A CLASS ===
+    class AlienA {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.health = 4; this.mesh = null; this.shadowMesh = null;
+        this.collisionRadius = 1.2; this.animFrame = 0; this.dying = false; this.converted = false; this.glowMesh = null; this.createMesh();
+      }
+      createMesh() {
+        const alienGeometry = new THREE.PlaneGeometry(4.0, 5.0);
+        this.mesh = new THREE.Mesh(alienGeometry, alienAMaterials[0]);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1.25;
+        const shadowGeometry = new THREE.PlaneGeometry(4.0, 4.0);
+        this.shadowMesh = new THREE.Mesh(shadowGeometry, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.3, color: 0x000000 }));
+        this.shadowMesh.rotation.x = -Math.PI / 2; this.shadowMesh.position.set(this.position.x, 0.01, this.position.z);
+        scene.add(this.mesh); scene.add(this.shadowMesh);
+      }
+      update() {
+        if (this.dying) return;
+        const direction = new THREE.Vector3(); direction.subVectors(camera.position, this.mesh.position).normalize();
+        this.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+        this.shadowMesh.position.set(this.mesh.position.x, 0.01, this.mesh.position.z);
+      }
+      animate() {
+        if (this.dying) return; this.animFrame = (this.animFrame + 1) % 9;
+        if (this.mesh && alienAMaterials.length === 9) { this.mesh.material = alienAMaterials[this.animFrame]; }
+      }
+      convert() {
+        if (this.converted) return; this.converted = true; this.glowMesh = createBlueGlow(this.mesh);
+        console.log(`${this.id} converted!`);
+      }
+      takeDamage(amount) {
+        if (this.dying) return; this.health -= amount; console.log(`${this.id} took ${amount} damage, health: ${this.health}`);
+        if (this.health <= 0) this.die();
+      }
+      die() {
+        if (this.dying) return; this.dying = true;
+        let opacity = 1.0;
+        const fadeInterval = setInterval(() => {
+          opacity -= CONFIG.FADE_SPEED;
+          if (this.mesh) this.mesh.material.opacity = opacity;
+          if (this.shadowMesh) this.shadowMesh.material.opacity = opacity * 0.3;
+          if (this.glowMesh) this.glowMesh.material.opacity = opacity * 0.3;
+          if (opacity <= 0) { clearInterval(fadeInterval); this.destroy(); }
+        }, 50);
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh); if (this.shadowMesh) scene.remove(this.shadowMesh);
+        if (this.glowMesh) scene.remove(this.glowMesh);
+        const index = aliens.indexOf(this); if (index > -1) aliens.splice(index, 1);
+      }
+    }
+    
+    // === R2 UNIT CLASS ===
+    class R2Unit {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.health = 2; this.mesh = null; this.shadowMesh = null;
+        this.collisionRadius = 0.8; this.animFrame = 0; this.dying = false; this.converted = false; this.glowMesh = null; this.createMesh();
+      }
+      createMesh() {
+        const r2Geometry = new THREE.PlaneGeometry(1.5, 2);
+        this.mesh = new THREE.Mesh(r2Geometry, r2Materials[0]);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1;
+        const shadowGeometry = new THREE.PlaneGeometry(1.5, 1.5);
+        this.shadowMesh = new THREE.Mesh(shadowGeometry, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.3, color: 0x000000 }));
+        this.shadowMesh.rotation.x = -Math.PI / 2; this.shadowMesh.position.set(this.position.x, 0.01, this.position.z);
+        scene.add(this.mesh); scene.add(this.shadowMesh);
+      }
+      update() {
+        if (this.dying) return;
+        const direction = new THREE.Vector3(); direction.subVectors(camera.position, this.mesh.position).normalize();
+        this.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+        this.shadowMesh.position.set(this.mesh.position.x, 0.01, this.mesh.position.z);
+      }
+      animate() {
+        if (this.dying) return; this.animFrame = (this.animFrame + 1) % 4;
+        if (this.mesh && r2Materials.length === 4) { this.mesh.material = r2Materials[this.animFrame]; }
+      }
+      convert() {
+        if (this.converted) return; this.converted = true; this.glowMesh = createBlueGlow(this.mesh);
+        console.log(`${this.id} converted!`);
+      }
+      takeDamage(amount) {
+        if (this.dying) return; this.health -= amount; console.log(`${this.id} took ${amount} damage, health: ${this.health}`);
+        if (this.health <= 0) this.die();
+      }
+      die() {
+        if (this.dying) return; this.dying = true; playSound('r2scream');
+        let opacity = 1.0;
+        const fadeInterval = setInterval(() => {
+          opacity -= CONFIG.FADE_SPEED;
+          if (this.mesh) this.mesh.material.opacity = opacity;
+          if (this.shadowMesh) this.shadowMesh.material.opacity = opacity * 0.3;
+          if (this.glowMesh) this.glowMesh.material.opacity = opacity * 0.3;
+          if (opacity <= 0) { clearInterval(fadeInterval); this.destroy(); }
+        }, 50);
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh); if (this.shadowMesh) scene.remove(this.shadowMesh);
+        if (this.glowMesh) scene.remove(this.glowMesh);
+        const index = r2Units.indexOf(this); if (index > -1) r2Units.splice(index, 1);
+      }
+    }
+    
+    // === STORMTROOPER CLASS (UPDATED ANIMATION SYSTEM) ===
+    class Stormtrooper {
+      constructor(position, id) {
+        this.id = id; this.position = position.clone(); this.health = 5; this.mesh = null; this.shadowMesh = null;
+        this.collisionRadius = 0.6; this.dying = false; this.converted = false; this.glowMesh = null;
+        this.aggressive = false; this.lastShotTime = 0; this.shotCooldown = CONFIG.STORMIE_SHOT_COOLDOWN; this.attackRange = CONFIG.STORMIE_ATTACK_RANGE;
+        
+        // Animation state machine
+        this.animState = 'IDLE'; // IDLE, ATTACK, DYING
+        this.animFrame = 0;
+        this.animTimer = 0;
+        this.deathFrame = 0;
+        this.createMesh();
+      }
+      createMesh() {
+        const stormieGeometry = new THREE.PlaneGeometry(1.8, 2.2);
+        this.mesh = new THREE.Mesh(stormieGeometry, stormieIdleMaterials[0]);
+        this.mesh.position.copy(this.position); this.mesh.position.y = 1.1;
+        const shadowGeometry = new THREE.PlaneGeometry(1.8, 1.8);
+        this.shadowMesh = new THREE.Mesh(shadowGeometry, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.4, color: 0x000000 }));
+        this.shadowMesh.rotation.x = -Math.PI / 2; this.shadowMesh.position.set(this.position.x, 0.01, this.position.z);
+        scene.add(this.mesh); scene.add(this.shadowMesh);
+      }
+      update() {
+        if (this.dying || this.converted) return;
+        const direction = new THREE.Vector3(); direction.subVectors(camera.position, this.mesh.position).normalize();
+        this.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+        this.shadowMesh.position.set(this.mesh.position.x, 0.01, this.mesh.position.z);
+        if (this.aggressive) {
+          const distanceToPlayer = camera.position.distanceTo(this.position);
+          if (distanceToPlayer <= this.attackRange) { this.tryAttack(); }
+        }
+      }
+      animate() {
+        if (this.dying) return;
+        this.animTimer += 1;
+        
+        if (this.animState === 'IDLE') {
+          if (this.animTimer >= CONFIG.STORMIE_ANIM_SPEED) {
+            this.animFrame = (this.animFrame + 1) % 24;
+            this.mesh.material = stormieIdleMaterials[this.animFrame];
+            this.animTimer = 0;
+          }
+        } else if (this.animState === 'ATTACK') {
+          this.mesh.material = stormieAttackMaterial;
+        } else if (this.animState === 'DYING') {
+          if (this.animTimer >= 6) {
+            if (this.deathFrame < 14) {
+              this.mesh.material = stormieDieMaterials[this.deathFrame];
+              this.deathFrame++;
+              this.animTimer = 0;
+            }
+          }
+        }
+      }
+      tryAttack() {
+        const currentTime = Date.now();
+        if (currentTime - this.lastShotTime > this.shotCooldown) { this.shoot(); this.lastShotTime = currentTime; }
+      }
+      shoot() {
+        console.log(`${this.id} shoots at player!`);
+        
+        this.animState = 'ATTACK';
+        
+        document.body.style.backgroundColor = 'rgba(255, 0, 0, 0.4)';
+        setTimeout(() => { document.body.style.backgroundColor = ''; }, 150);
+        
+        playSound('blast1');
+        
+        setTimeout(() => {
+          if (!this.dying) {
+            this.animState = 'IDLE';
+            this.animFrame = 0;
+            this.animTimer = 0;
+          }
+        }, 300);
+        
+        const distanceToPlayer = camera.position.distanceTo(this.position);
+        if (distanceToPlayer <= this.attackRange) {
+          const hitChance = Math.max(0.3, 1.0 - (distanceToPlayer / this.attackRange));
+          if (Math.random() < hitChance) { this.hitPlayer(); } else { console.log(`${this.id} missed!`); }
+        }
+      }
+      hitPlayer() {
+        if (gameOver) return; gameState.health -= 1; console.log(`Player hit by ${this.id}! Health: ${gameState.health}`);
+        if (gameState.health <= 0) { gameState.health = 0; triggerGameOver(); }
+      }
+      makeAggressive() {
+        if (!this.aggressive) { this.aggressive = true; console.log(`${this.id} becomes aggressive!`); }
+      }
+      convert() {
+        if (this.converted) return; this.converted = true; this.aggressive = false; this.glowMesh = createBlueGlow(this.mesh);
+        console.log(`${this.id} converted!`);
+      }
+      takeDamage(amount) {
+        if (this.dying) return; this.health -= amount; this.makeAggressive();
+        console.log(`${this.id} took ${amount} damage, health: ${this.health}`);
+        if (this.health <= 0) this.die();
+      }
+      die() {
+        if (this.dying) return; this.dying = true;
+        this.animState = 'DYING';
+        this.deathFrame = 0;
+        this.animTimer = 0;
+        
+        if (sounds.stormiedies1) {
+          playSound('stormiedies1');
+        }
+        
+        setTimeout(() => {
+          let opacity = 1.0;
+          const fadeInterval = setInterval(() => {
+            opacity -= CONFIG.FADE_SPEED;
+            if (this.mesh) this.mesh.material.opacity = opacity;
+            if (this.shadowMesh) this.shadowMesh.material.opacity = opacity * 0.4;
+            if (this.glowMesh) this.glowMesh.material.opacity = opacity * 0.3;
+            if (opacity <= 0) { clearInterval(fadeInterval); this.destroy(); }
+          }, 50);
+        }, CONFIG.DEATH_ANIM_DELAY);
+      }
+      destroy() {
+        if (this.mesh) scene.remove(this.mesh); if (this.shadowMesh) scene.remove(this.shadowMesh);
+        if (this.glowMesh) scene.remove(this.glowMesh);
+        const index = stormtroopers.indexOf(this); if (index > -1) stormtroopers.splice(index, 1);
+      }
+    }
+    
+    // === COLLISION DETECTION ===
+    function checkWallCollision(newPosition) {
+      const buffer = CONFIG.COLLISION_RADIUS + CONFIG.WALL_BARRIER;
+      if (newPosition.z <= 10) {
+        if (newPosition.x < -8 + buffer || newPosition.x > 8 - buffer) return false;
+        if (newPosition.z < -8 + buffer) return false;
+        if (newPosition.z > 10 - buffer && (newPosition.x < -1.5 + buffer || newPosition.x > 1.5 - buffer)) return false;
+      }
+      else if (newPosition.z > 10 && newPosition.z <= 25) {
+        if (newPosition.x < -6 + buffer || newPosition.x > 6 - buffer) return false;
+        if (newPosition.z > 25 - buffer && (newPosition.x < -1.5 + buffer || newPosition.x > 1.5 - buffer)) return false;
+      }
+      else if (newPosition.z > 25 && newPosition.z <= 40) {
+        const octCenter = new THREE.Vector3(0, 0, 32.5);
+        const distance = Math.sqrt((newPosition.x - octCenter.x) ** 2 + (newPosition.z - octCenter.z) ** 2);
+        if (distance > 7 - buffer) return false;
+        if (newPosition.z > 40 - buffer && (newPosition.x < -1.5 + buffer || newPosition.x > 1.5 - buffer)) return false;
+      }
+      else if (newPosition.z > 40) {
+        if (newPosition.z > 50 - buffer) return false;
+        const triangleWidth = 6 - (newPosition.z - 40) * 0.6;
+        if (Math.abs(newPosition.x) > triangleWidth - buffer) return false;
+      }
+      for (let door of doors) { if (!door.checkCollision(newPosition)) return false; }
+      return true;
+    }
+    
+    function checkEntityCollision(newPosition, entities) {
+      for (let entity of entities) {
+        if (entity.dying) continue;
+        const distance = newPosition.distanceTo(entity.position);
+        if (distance < CONFIG.COLLISION_RADIUS + entity.collisionRadius) return false;
+      }
+      return true;
+    }
+    
+    // === WEAPON BOBBING ===
+    let weaponBobOffset = 0;
+    function updateWeaponBob(deltaTime) {
+      if (gameOver) return;
+      if (gameState.isMoving) {
+        bobTime += deltaTime * CONFIG.BOB_SPEED; const bobOffset = Math.sin(bobTime) * CONFIG.BOB_AMOUNT;
+        camera.position.y = baseY + bobOffset; const sway = Math.sin(bobTime * 0.5) * 0.02; camera.position.x += sway;
+        weaponBobOffset = Math.sin(bobTime * 1.5) * 10;
+        const weaponSprite = document.getElementById('weaponSprite');
+        weaponSprite.style.transform = `translateX(-50%) translateY(${weaponBobOffset}px)`;
+      } else {
+        camera.position.y = THREE.MathUtils.lerp(camera.position.y, baseY, 0.1);
+        weaponBobOffset = THREE.MathUtils.lerp(weaponBobOffset, 0, 0.1);
+        const weaponSprite = document.getElementById('weaponSprite');
+        weaponSprite.style.transform = `translateX(-50%) translateY(${weaponBobOffset}px)`;
+        bobTime = 0;
+      }
+    }
+    
+    // === HUD UPDATE ===
+    function updateHUD() {
+      if (gameOver) return;
+      const healthPercentage = (gameState.health / gameState.maxHealth) * 100;
+      document.getElementById('healthFill').style.width = healthPercentage + '%';
+      document.getElementById('healthText').textContent = `${gameState.health}/${gameState.maxHealth}`;
+      document.getElementById('ammoCounter').textContent = `Pamphlets: ${gameState.pamphlets}`;
+      document.getElementById('zapperFill').style.height = (gameState.zapCharge * 100) + '%';
+      
+      const statusText = document.getElementById('statusText');
+      const baseText = 'WASD move, Mouse look, Left zap, Right pamphlet, Space doors, +/- music, P no-clip';
+      statusText.textContent = noClipMode ? baseText + ' [NO-CLIP ON]' : baseText;
+      if (noClipMode) statusText.style.color = '#ff0000';
+      else statusText.style.color = '#ffff00';
+    }
+    
+    // === ZAPPER RECHARGE ===
+    function updateZapperCharge(deltaTime) {
+      if (gameOver) return;
+      if (!gameState.zapReady && gameState.zapCharge < 1.0) {
+        gameState.zapCharge += deltaTime / CONFIG.ZAP_RECHARGE_TIME;
+        if (gameState.zapCharge >= 1.0) { gameState.zapCharge = 1.0; gameState.zapReady = true; }
+      }
+    }
+    
+    // === ZAPPER ATTACK ===
+    function handleZapperAttack() {
+      if (!gameState.zapReady || gameOver || !gameStarted) return;
+      startBackgroundMusic(); gameState.zapReady = false; gameState.zapCharge = 0.0;
+      playRandomZapperSound(); triggerElectricFlash();
+      const weaponSprite = document.getElementById('weaponSprite');
+      weaponSprite.style.transform = `translateX(-50%) translateY(${weaponBobOffset + 20}px)`;
+      const originalPosition = camera.position.clone();
+      camera.position.add(new THREE.Vector3((Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1));
+      setTimeout(() => {
+        camera.position.copy(originalPosition);
+        weaponSprite.style.transform = `translateX(-50%) translateY(${weaponBobOffset}px)`;
+      }, 100);
+      checkZapperTargets();
+    }
+    
+    // === PAMPHLET ATTACK ===
+    function handlePamphletAttack() {
+      if (gameOver || !gameStarted || gameState.pamphlets <= 0) return;
+      gameState.pamphlets -= 1;
+      const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const pamphlet = new PamphletProjectile(camera.position.clone(), forward.negate());
+      pamphletProjectiles.push(pamphlet);
+      console.log(`Fired pamphlet! Remaining: ${gameState.pamphlets}`);
+    }
+    
+    function checkZapperTargets() {
+      const zapRange = CONFIG.ZAP_RANGE;
+      const allTargets = [...r2Units, ...stormtroopers, ...probeDroids, ...xeroxDroids, ...aliens, ...npcs];
+      for (let target of allTargets) {
+        if (target.dying) continue;
+        const distance = camera.position.distanceTo(target.position);
+        if (distance < zapRange) {
+          target.takeDamage(1); console.log(`Zapped ${target.id} at distance ${distance.toFixed(2)}`);
+        }
+      }
+    }
+    
+    // === MOVEMENT SYSTEM ===
+    function updateMovement(deltaTime) {
+      if (gameOver) return;
+      const acceleration = new THREE.Vector3(); let isMoving = false;
+      const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)).normalize();
+      if (keys["KeyW"]) { acceleration.addScaledVector(forward, -CONFIG.MOVE_SPEED); isMoving = true; }
+      if (keys["KeyS"]) { acceleration.addScaledVector(forward, CONFIG.MOVE_SPEED); isMoving = true; }
+      if (keys["KeyA"]) { acceleration.addScaledVector(right, -CONFIG.MOVE_SPEED); isMoving = true; }
+      if (keys["KeyD"]) { acceleration.addScaledVector(right, CONFIG.MOVE_SPEED); isMoving = true; }
+      gameState.isMoving = isMoving; velocity.add(acceleration); velocity.multiplyScalar(CONFIG.FRICTION);
+      const newPosition = camera.position.clone(); newPosition.add(velocity); newPosition.y = baseY;
+      
+      if (noClipMode) {
+        camera.position.copy(newPosition);
+      } else {
+        if (checkWallCollision(newPosition) && checkEntityCollision(newPosition, [...r2Units, ...stormtroopers, ...probeDroids, ...xeroxDroids, ...aliens, ...npcs])) {
+          camera.position.copy(newPosition);
+        } else { velocity.multiplyScalar(0.5); }
+      }
+    }
+    
+    // === ENVIRONMENT CREATION ===
+    function createEnvironment() {
+      const floorTexture = new THREE.TextureLoader().load("pngs/floor1_512.png");
+      floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping; floorTexture.repeat.set(20, 20);
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ map: floorTexture }));
+      floor.rotation.x = -Math.PI / 2; floor.position.set(0, 0, 25); floor.receiveShadow = true; scene.add(floor);
+      const wallTexture = new THREE.TextureLoader().load("pngs/wall1_512.png");
+      const wallMaterial = new THREE.MeshStandardMaterial({ map: wallTexture }); const wallHeight = 4;
+      const room1Walls = [[-8, 2, 1, 1, wallHeight, 18], [8, 2, 1, 1, wallHeight, 18], [0, 2, -8, 16, wallHeight, 1], [-3.5, 2, 10, 5, wallHeight, 1], [3.5, 2, 10, 5, wallHeight, 1]];
+      const room2Walls = [[-6, 2, 17.5, 1, wallHeight, 15], [6, 2, 17.5, 1, wallHeight, 15], [0, 2, 10, 12, wallHeight, 1], [-3.5, 2, 25, 5, wallHeight, 1], [3.5, 2, 25, 5, wallHeight, 1]];
+      const octRadius = 7; const octCenter = new THREE.Vector3(0, 2, 32.5);
+      for (let i = 0; i < 8; i++) {
+        const angle = (i * Math.PI * 2) / 8; const nextAngle = ((i + 1) * Math.PI * 2) / 8;
+        const x1 = octCenter.x + Math.cos(angle) * octRadius; const z1 = octCenter.z + Math.sin(angle) * octRadius;
+        const x2 = octCenter.x + Math.cos(nextAngle) * octRadius; const z2 = octCenter.z + Math.sin(nextAngle) * octRadius;
+        const centerX = (x1 + x2) / 2; const centerZ = (z1 + z2) / 2;
+        const wallLength = Math.sqrt((x2 - x1) ** 2 + (z2 - z1) ** 2); const wallAngle = Math.atan2(z2 - z1, x2 - x1);
+        if (centerZ > 39.5) continue;
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(wallLength, wallHeight, 1), wallMaterial);
+        wall.position.set(centerX, 2, centerZ); wall.rotation.y = wallAngle; scene.add(wall);
+      }
+      const octEntranceWalls = [[-3.5, 2, 40, 5, wallHeight, 1], [3.5, 2, 40, 5, wallHeight, 1]];
+      const room4Walls = [[-4, 2, 45, 1, wallHeight, 10], [4, 2, 45, 1, wallHeight, 10], [0, 2, 50, 8, wallHeight, 1]];
+      [...room1Walls, ...room2Walls, ...octEntranceWalls, ...room4Walls].forEach(([x, y, z, w, h, d]) => {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMaterial);
+        wall.position.set(x, y, z); wall.castShadow = true; scene.add(wall);
+      });
+    }
+    
+    // === UNIT CREATION ===
+    function createAllUnits() {
+      const probe1 = new ProbeDroid(new THREE.Vector3(4, 0, 3), 'probe_alpha'); probeDroids.push(probe1);
+      const alienA1 = new AlienA(new THREE.Vector3(-4, 0, 3), 'wookiee_alpha'); aliens.push(alienA1);
+      const r2_1 = new R2Unit(new THREE.Vector3(-3, 0, 17.5), 'd1a'); r2Units.push(r2_1);
+      const xerox1 = new XeroxDroid(new THREE.Vector3(3, 0, 17.5), 'xerox_alpha'); xeroxDroids.push(xerox1);
+      const stormie1 = new Stormtrooper(new THREE.Vector3(-3, 0, 32.5), 'stormie_alpha'); stormtroopers.push(stormie1);
+      const alienA2 = new AlienA(new THREE.Vector3(3, 0, 32.5), 'wookiee_beta'); aliens.push(alienA2);
+      const r2_2 = new R2Unit(new THREE.Vector3(-2, 0, 47), 'd1b'); r2Units.push(r2_2);
+      const probe2 = new ProbeDroid(new THREE.Vector3(2, 0, 47), 'probe_beta'); probeDroids.push(probe2);
+    }
+    
+    function createDoors() {
+      const door1 = new Door(new THREE.Vector3(0, 0, 10), 'door_1_2');
+      const door2 = new Door(new THREE.Vector3(0, 0, 25), 'door_2_3');
+      const door3 = new Door(new THREE.Vector3(0, 0, 40), 'door_3_4');
+      doors.push(door1, door2, door3);
+    }
+    
+    // === EVENT LISTENERS ===
+    function setupEventListeners() {
+      document.addEventListener("keydown", e => { 
+        keys[e.code] = true; if (!gameStarted) gameStarted = true; startBackgroundMusic();
+        if (e.code === "Space") {
+          e.preventDefault(); let nearestDoor = null; let nearestDistance = Infinity;
+          for (let door of doors) {
+            const distance = camera.position.distanceTo(door.position);
+            if (distance < 4 && distance < nearestDistance) { nearestDoor = door; nearestDistance = distance; }
+          }
+          if (nearestDoor) nearestDoor.open();
+        }
+        if (e.code === "KeyP") {
+          e.preventDefault(); 
+          noClipMode = !noClipMode; 
+          console.log(`No-clip mode: ${noClipMode ? 'ON' : 'OFF'}`);
+        }
+        if (e.code === "Equal" || e.code === "NumpadAdd") { e.preventDefault(); switchMusicTrack('next'); }
+        if (e.code === "Minus" || e.code === "NumpadSubtract") { e.preventDefault(); switchMusicTrack('prev'); }
+      });
+      document.addEventListener("keyup", e => { keys[e.code] = false; });
+      document.addEventListener("mousedown", e => { 
+        if (e.button === 0) {
+          if (!gameStarted) { gameStarted = true; startBackgroundMusic(); } else { handleZapperAttack(); }
+        }
+        if (e.button === 2) { e.preventDefault(); handlePamphletAttack(); }
+      });
+      window.addEventListener("contextmenu", e => { e.preventDefault(); });
+      document.addEventListener("click", () => {
+        if (document.pointerLockElement !== document.body) { document.body.requestPointerLock(); }
+      });
+      document.addEventListener("mousemove", onMouseMove); window.addEventListener("resize", onWindowResize);
+    }
+    
+    function onMouseMove(event) {
+      if (document.pointerLockElement === document.body) { yaw -= event.movementX * 0.002; camera.rotation.y = yaw; }
+    }
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    // === GAME INITIALIZATION ===
+    function init() {
+      scene = new THREE.Scene(); scene.background = new THREE.Color(0x000011);
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, baseY, 0);
+      renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      document.body.appendChild(renderer.domElement);
+      const ambientLight = new THREE.AmbientLight(0x404040, 0.6); scene.add(ambientLight);
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(10, 10, 5); directionalLight.castShadow = true; scene.add(directionalLight);
+      createEnvironment(); createAllUnits(); createDoors(); setupEventListeners();
+      setInterval(() => {
+        for (let r2 of r2Units) r2.animate(); for (let stormie of stormtroopers) stormie.animate();
+        for (let probe of probeDroids) probe.animate(); for (let xerox of xeroxDroids) xerox.animate();
+        for (let alien of aliens) alien.animate();
+      }, CONFIG.ANIMATION_INTERVAL);
+      animate();
+    }
+    
+    // === MAIN GAME LOOP ===
+    let lastTime = performance.now();
+    function animate() {
+      requestAnimationFrame(animate);
+      const currentTime = performance.now(); const deltaTime = (currentTime - lastTime) / 1000; lastTime = currentTime;
+      updateMovement(deltaTime); updateWeaponBob(deltaTime); updateZapperCharge(deltaTime); updateHUD();
+      for (let r2 of r2Units) r2.update(); for (let stormie of stormtroopers) stormie.update();
+      for (let probe of probeDroids) probe.update(); for (let xerox of xeroxDroids) xerox.update();
+      for (let alien of aliens) alien.update(); for (let npc of npcs) npc.update();
+      for (let i = pamphletProjectiles.length - 1; i >= 0; i--) {
+        const pamphlet = pamphletProjectiles[i];
+        if (!pamphlet.update()) { pamphlet.destroy(); } else { pamphlet.checkHit(); }
+      }
+      renderer.render(scene, camera);
+    }
+    
+    // Start the game
+    init();
+  </script>
+</body>
+</html>
