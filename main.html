@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gonk R2 Enhanced FPS v009 - Modular</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+    canvas { display: block; }
+    
+    #hud {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 10;
+    }
+    
+    #electricFlash {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(circle, rgba(0,255,255,0.3) 0%, rgba(255,255,255,0.1) 50%, transparent 100%);
+      opacity: 0; pointer-events: none; z-index: 15; transition: opacity 0.05s ease;
+    }
+    
+    #healthBar {
+      position: absolute; top: 20px; left: 20px; width: 200px; height: 20px;
+      border: 2px solid #ff0000; background: rgba(0, 0, 0, 0.5);
+    }
+    
+    #healthFill {
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, #ff0000, #ffff00, #00ff00);
+      transition: width 0.3s ease;
+    }
+    
+    #healthText {
+      position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+      color: white; font-size: 12px; font-weight: bold;
+    }
+    
+    #ammoCounter {
+      position: absolute; top: 20px; right: 20px; color: #1fe0ff;
+      font-size: 18px; font-weight: bold; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    }
+    
+    #zapperUI {
+      position: absolute; bottom: 0; left: 20px; width: 40px; height: 15vh;
+      border: 2px solid #1fe0ff; background: rgba(0, 0, 0, 0.5);
+    }
+    
+    #zapperFill {
+      position: absolute; bottom: 0; left: 0; width: 100%; height: 100%;
+      background: linear-gradient(0deg, #1fe0ff, #00ffff); transition: height 0.1s ease;
+    }
+    
+    #weaponSprite {
+      position: absolute; bottom: 0%; left: 40%; transform: translateX(-70%) translateY(198px) rotate(10deg);
+      width: 576px; height: 864px; background-image: url('pngs/weapon_sprite1.png');
+      background-size: contain; background-repeat: no-repeat; background-position: bottom center;
+      pointer-events: none; z-index: 5;
+    }
+    
+    #statusText {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      color: #ffff00; font-size: 14px; font-weight: bold; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    }
+    
+    #loadingScreen {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: #000; color: #fff; display: flex; flex-direction: column;
+      justify-content: center; align-items: center; z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="loadingScreen">
+    <h1>Loading Gonk FPS...</h1>
+    <p id="loadingStatus">Initializing...</p>
+  </div>
+  
+  <div id="hud" style="display: none;">
+    <div id="electricFlash"></div>
+    <div id="healthBar"><div id="healthFill"></div><div id="healthText">10/10</div></div>
+    <div id="ammoCounter">Pamphlets: 50</div>
+    <div id="zapperUI"><div id="zapperFill"></div></div>
+    <div id="weaponSprite"></div>
+    <div id="statusText">WASD move, Mouse look, Left zap, Right pamphlet, Space doors, +/- music, P no-clip</div>
+  </div>
+
+  <!-- THREE.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  
+  <!-- Game modules in dependency order -->
+  <script src="assets.js" onload="console.log('assets.js loaded')" onerror="console.error('assets.js failed to load')"></script>
+  <script src="config.js" onload="console.log('config.js loaded')" onerror="console.error('config.js failed to load')"></script>
+  <script src="entities.js" onload="console.log('entities.js loaded')" onerror="console.error('entities.js failed to load')"></script>
+  <script src="physics.js" onload="console.log('physics.js loaded')" onerror="console.error('physics.js failed to load')"></script>
+  <script src="environment.js" onload="console.log('environment.js loaded')" onerror="console.error('environment.js failed to load')"></script>
+  <script src="gameloop.js" onload="console.log('gameloop.js loaded')" onerror="console.error('gameloop.js failed to load')"></script>
+
+  <script>
+    // === ESSENTIAL VARIABLES (must be defined before modules load) ===
+    let scene, camera, renderer;
+    let r2Units = [], stormtroopers = [], probeDroids = [], xeroxDroids = [], aliens = [], doors = [], npcs = [], pamphletProjectiles = [];
+    let gameOver = false, currentMusicTrack = 1, musicStarted = false, gameStarted = false, noClipMode = false;
+    let gameState = { health: 10, maxHealth: 10, pamphlets: 50, maxPamphlets: 100, zapReady: true, zapCharge: 1.0, isMoving: false };
+    let keys = {}, yaw = 0, baseY = 1.5, bobTime = 0, velocity, weaponBobOffset = 0;
+    
+    // FIXED: Improved loading status tracking
+    let loadedModules = 0;
+    const totalModules = 5; // assets, config, entities, physics, environment, gameloop
+    
+    function updateLoadingStatus(message) {
+      const statusElement = document.getElementById('loadingStatus');
+      if (statusElement) statusElement.textContent = message;
+      console.log('Loading:', message);
+    }
+    
+    // Check THREE.js loading
+    if (typeof THREE === 'undefined') {
+      console.error('THREE.js failed to load!');
+      updateLoadingStatus('ERROR: THREE.js failed to load!');
+      document.body.innerHTML = '<h1 style="color: red; text-align: center; margin-top: 50px;">THREE.js failed to load.</h1>';
+    } else {
+      console.log('THREE.js loaded! Version: Gonk009 - Modular');
+      updateLoadingStatus('THREE.js loaded successfully...');
+      
+      // Wait for all modules to load with better tracking
+      window.addEventListener('load', function() {
+        console.log('DOM loaded, checking modules...');
+        updateLoadingStatus('DOM loaded, checking modules...');
+        
+        // FIXED: Better module checking with retry logic
+        let attemptCount = 0;
+        const maxAttempts = 10;
+        
+        function checkModulesAndStart() {
+          attemptCount++;
+          console.log(`Attempt ${attemptCount}: Checking if all modules are ready...`);
+          updateLoadingStatus(`Checking modules... (attempt ${attemptCount}/${maxAttempts})`);
+          
+          // Check if all required functions are available
+          const requiredFunctions = [
+            'initializeMaterials', 'setupLighting', 'createEnvironment', 
+            'createAllUnits', 'createDoors', 'setupEventListeners',
+            'updateMovement', 'updateWeaponBob', 'updateZapperCharge', 'updateHUD'
+          ];
+          
+          const requiredObjects = ['ASSETS', 'CONFIG'];
+          
+          let missingFunctions = [];
+          let missingObjects = [];
+          
+          for (let funcName of requiredFunctions) {
+            if (typeof window[funcName] !== 'function') {
+              missingFunctions.push(funcName);
+            }
+          }
+          
+          for (let objName of requiredObjects) {
+            if (typeof window[objName] === 'undefined') {
+              missingObjects.push(objName);
+            }
+          }
+          
+          if (missingFunctions.length > 0 || missingObjects.length > 0) {
+            console.log('Missing functions:', missingFunctions);
+            console.log('Missing objects:', missingObjects);
+            
+            if (attemptCount < maxAttempts) {
+              updateLoadingStatus(`Waiting for modules... (${missingFunctions.length + missingObjects.length} missing)`);
+              setTimeout(checkModulesAndStart, 200);
+              return;
+            } else {
+              console.error('Max attempts reached, starting anyway...');
+              updateLoadingStatus('Warning: Some modules may not be ready');
+            }
+          }
+          
+          console.log('All modules ready, starting game...');
+          updateLoadingStatus('Starting game...');
+          startGame();
+        }
+        
+        // Start checking after a short delay
+        setTimeout(checkModulesAndStart, 100);
+      });
+    }
+    
+    function startGame() {
+      console.log('Starting game initialization...');
+      updateLoadingStatus('Initializing game systems...');
+      
+      try {
+        // Initialize THREE.js objects
+        velocity = new THREE.Vector3();
+        
+        // Initialize scene
+        scene = new THREE.Scene(); 
+        scene.background = new THREE.Color(0x000011);
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, baseY, 15); // FIXED: Start in second room
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true }); 
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true; 
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+        
+        // FIXED: Initialize materials with error handling
+        updateLoadingStatus('Loading textures and materials...');
+        const materialsLoaded = initializeMaterials();
+        if (!materialsLoaded) {
+          console.warn('Materials failed to load properly, continuing anyway...');
+          updateLoadingStatus('Warning: Some textures failed to load');
+        }
+        
+        // Start game systems
+        updateLoadingStatus('Creating game world...');
+        setupLighting();
+        createEnvironment(); 
+        createAllUnits(); 
+        createDoors(); 
+        setupEventListeners();
+        
+        // ENHANCED: Much faster entity animations - every 100ms instead of 500ms
+        setInterval(function() {
+          for (let r2 of r2Units) r2.animate(); 
+          for (let stormie of stormtroopers) stormie.animate();
+          for (let probe of probeDroids) probe.animate(); 
+          for (let xerox of xeroxDroids) xerox.animate();
+          for (let alien of aliens) alien.animate();
+        }, 100); // ENHANCED: Changed from 500ms to 100ms for 0.1 second intervals
+        
+        // Start main game loop
+        let lastTime = performance.now();
+        function animate() {
+          requestAnimationFrame(animate);
+          const currentTime = performance.now(); 
+          const deltaTime = (currentTime - lastTime) / 1000; 
+          lastTime = currentTime;
+          
+          updateMovement(deltaTime); 
+          updateWeaponBob(deltaTime); 
+          updateZapperCharge(deltaTime); 
+          updateHUD();
+          
+          for (let r2 of r2Units) r2.update(); 
+          for (let stormie of stormtroopers) stormie.update();
+          for (let probe of probeDroids) probe.update(); 
+          for (let xerox of xeroxDroids) xerox.update();
+          for (let alien of aliens) alien.update(); 
+          for (let npc of npcs) npc.update();
+          
+          for (let i = pamphletProjectiles.length - 1; i >= 0; i--) {
+            const pamphlet = pamphletProjectiles[i];
+            if (!pamphlet.update()) { 
+              pamphlet.destroy(); 
+            } else { 
+              pamphlet.checkHit(); 
+            }
+          }
+          
+          renderer.render(scene, camera);
+        }
+        
+        animate();
+        
+        // Hide loading screen and show game
+        updateLoadingStatus('Game loaded successfully!');
+        setTimeout(() => {
+          document.getElementById('loadingScreen').style.display = 'none';
+          document.getElementById('hud').style.display = 'block';
+        }, 500);
+        
+        console.log('Game started successfully!');
+        
+      } catch (error) {
+        console.error('Error starting game:', error);
+        updateLoadingStatus('ERROR: Failed to start game - ' + error.message);
+      }
+    }
+  </script>
+</body>
+</html>
